@@ -118,7 +118,7 @@ for (const [showToolActivity, fullAccess] of [[true, false], [false, false], [fa
     model: 'gemini-4-neon', reasoningEffort: 'medium', sessionId: 'test', messages: [user('u', 'short test')],
   }));
   assert.deepEqual(calls[0], ['session/set_model', { sessionId: 'temp', modelId: 'gemini-4-neon-medium' }]);
-  assert.equal(chunks.some(chunk => chunk.text?.includes('Test tool → pending')), showToolActivity);
+  assert.equal(chunks.some(chunk => chunk.text?.includes('- `Test tool`')), showToolActivity);
   assert.ok(chunks.some(chunk => chunk.text?.includes(fullAccess ? '全权限预设：已自动允许 Test tool' : 'agy 请求权限')));
   assert.equal(chunks.at(-1).reason.kind, 'stop');
 });
@@ -173,4 +173,37 @@ test('usage keeps cache tokens disjoint; supported retry codes are retained', ()
   assert.equal(failureOf(new Error('Quota exceeded')).code, 'QUOTA');
   assert.equal(failureOf(new Error('HTTP 429')).code, 'RATE_LIMIT');
   assert.equal(failureOf(Object.assign(new Error('ACP exited'), { code: 'TRANSPORT' })).code, 'TRANSPORT');
+});
+
+test('thoughts, tool lines, and answer text stream as separate ordered blocks', async () => {
+  const adapter = new AgyAdapter({ directory: '.', settings: { showToolActivity: true }, records: {}, ask: async () => undefined,
+    getAgent: () => ({ session: { header: {} } }), cwdOf: () => '.' });
+  adapter.save = async () => {};
+  adapter.modelCache = models;
+  let update;
+  const client = {
+    onPermission: new Map(), subscribe(_id, listener) { update = listener; return () => {}; },
+    async request(method) {
+      if (method === 'session/prompt') {
+        const say = (sessionUpdate, text) => update({ sessionUpdate, content: { type: 'text', text } });
+        say('agent_thought_chunk', 'think 1 ');
+        say('agent_thought_chunk', 'more');
+        update({ sessionUpdate: 'tool_call', toolCallId: 'a', title: 'ls -la\nsecond line', status: 'pending' });
+        update({ sessionUpdate: 'tool_call_update', toolCallId: 'a', status: 'completed' });
+        update({ sessionUpdate: 'tool_call', toolCallId: 'b', title: 'cat x', status: 'pending' });
+        say('agent_thought_chunk', 'think 2');
+        say('agent_message_chunk', 'answer');
+        return { stopReason: 'end_turn' };
+      }
+      return {};
+    },
+  };
+  adapter.acquire = async () => client;
+  adapter.open = async () => ({ id: 'temp' });
+  adapter.close = async () => {};
+  const prepared = await adapter.prepareCall('agy', 'gemini-4-neon');
+  const chunks = await Array.fromAsync(prepared.stream({ model: 'gemini-4-neon', reasoningEffort: 'medium', sessionId: 't', messages: [user('u', 'x')] }));
+  const blocks = new Map();
+  for (const chunk of chunks) if (chunk.text !== undefined) blocks.set(chunk.index, (blocks.get(chunk.index) ?? '') + chunk.text);
+  assert.deepEqual([...blocks.values()], ['think 1 more', '**agy 工具**\n- `ls -la`\n- `cat x`\n', 'think 2', 'answer']);
 });

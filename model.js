@@ -49,7 +49,7 @@ export function modelRoute(families, id) {
       const reasoning = family.levels.length > 1 ? {
         efforts: family.levels.map(id => ({ id, name: EFFORT_NAMES[id] })), defaultEffort: fallback,
       } : undefined;
-      return { provider, id, name: family.name, inputModalities: ['text'], context: { contextWindow: CONTEXT_WINDOW }, ...(reasoning ? { reasoning } : {}) };
+      return { provider, id, name: `agy-${family.name}`, inputModalities: ['text'], context: { contextWindow: CONTEXT_WINDOW }, ...(reasoning ? { reasoning } : {}) };
     },
     slug(effort) {
       if (effort !== undefined && (family.levels.length < 2 || !family.levels.includes(effort))) {

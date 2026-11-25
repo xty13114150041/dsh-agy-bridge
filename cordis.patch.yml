@@ -2,3 +2,13 @@
     - id: dsh-agy-bridge
       name: dsh-agy-bridge
       config: {}
+    # An Agent mode with no child plugins: no DSH prompt, tools, or instruction
+    # files. Hooks and other global plugins still apply to the conversation.
+    - id: preset-agy
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: agy
+        name: Antigravity CLI
+        description: 仅用于 agy 对话：不带 DSH 的提示词、工具和说明文件；hooks 等全局插件仍然生效。
+        order: 5
+        plugins: []

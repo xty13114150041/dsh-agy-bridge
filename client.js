@@ -57,13 +57,12 @@ window.__ModuleLoader__.load({
       .dagy .dagy-list label { display:flex; gap:8px; align-items:center; padding:7px 0; border-top:1px solid var(--dsw-alias-settings-card-stroke); }
       .dagy .dagy-list label span { flex:1; overflow-wrap:anywhere; }
     `;
+    let rpc;
     async function request(route, { signal, body } = {}) {
-      const response = await fetch(`/api/${NS}/${route}`, {
-        signal, cache: 'no-store', ...(body === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw Object.assign(new Error(data.message || response.statusText), { code: data.code });
-      return data;
+      if (!rpc) throw new Error('DSH 连接尚未就绪。');
+      const result = await rpc.call('/api', `${NS}.${route}`, body ?? {}, signal);
+      if (!result.ok) throw Object.assign(new Error(result.error.message), { code: result.error.code });
+      return result.value;
     }
 
     const resources = ['version', 'quota', 'models'];
@@ -219,7 +218,7 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         const controller = new AbortController();
         reading.current = controller;
-        request(`mode?session=${encodeURIComponent(sessionId)}`, { signal: controller.signal }).then(
+        request('mode', { body: { sessionId }, signal: controller.signal }).then(
           value => { if (!controller.signal.aborted) { setMode(value); setError(undefined); } },
           cause => { if (!controller.signal.aborted) setError(cause.message); },
         );
@@ -255,8 +254,9 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots', 'locale', 'uiSession'],
+      inject: ['slots', 'locale', 'uiSession', 'connection'],
       apply(ctx) {
+        rpc = ctx.connection.rpc;
         ctx.effect(() => ctx.locale.register(NS, dictionaries));
         const t = ctx.locale.bind(NS);
         ctx.slots.inject('settings.section', () => ctx.slots.register({

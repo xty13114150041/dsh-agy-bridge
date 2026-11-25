@@ -313,28 +313,43 @@ export class AgyAdapter {
       }
       signal.throwIfAborted();
       if (!auxiliary) await this.save(key, { sessionId: session.id, cwd, executable: this.binary(), ...request.cursor, dirty: true, reply: undefined });
-      const reasoning = text => { output = true; emit({ type: 'reasoning-delta', index: 1, text }); };
+      // Each run of thought, tool activity, or answer text becomes its own block, in arrival order.
+      let kind;
+      let index = -1;
+      const open = next => { if (kind !== next) { kind = next; index += 1; return true; } return false; };
+      const reasoning = text => { output = true; open('thought'); emit({ type: 'reasoning-delta', index, text }); };
+      const toolNote = text => {
+        output = true;
+        const heading = open('tool') ? '**agy 工具**\n' : '';
+        emit({ type: 'reasoning-delta', index, text: `${heading}${text}\n` });
+      };
+      const brief = value => {
+        const line = String(value ?? '').split('\n')[0].trim();
+        return line.length > 160 ? `${line.slice(0, 160)}…` : line;
+      };
       const result = await prompt(client, session.id, [textBlock(request.text)], {
         signal,
         update(update) {
-          const kind = update.sessionUpdate;
-          if (kind === 'agent_message_chunk' || kind === 'agent_thought_chunk') {
+          const type = update.sessionUpdate;
+          if (type === 'agent_message_chunk' || type === 'agent_thought_chunk') {
             if (update.content?.type !== 'text' || !update.content.text) return;
             const { text } = update.content;
             output = true;
-            if (kind === 'agent_message_chunk') { reply += text; emit({ type: 'text-delta', index: 0, text }); }
+            if (type === 'agent_message_chunk') { reply += text; open('answer'); emit({ type: 'text-delta', index, text }); }
             else reasoning(text);
           }
-          if (kind === 'tool_call' || kind === 'tool_call_update') {
+          if (type === 'tool_call' || type === 'tool_call_update') {
             const { toolCallId, status } = update;
             const before = seen.get(toolCallId) ?? {};
             seen.set(toolCallId, { ...before, ...update });
-            if (kind === 'tool_call' || status && status !== before.status) {
+            if (type === 'tool_call' || status && status !== before.status) {
               // A tool-only response is still a successful response when display is disabled.
               output = true;
               if (showToolActivity) {
                 const title = update.title ?? before.title ?? update.name ?? before.name ?? toolCallId;
-                reasoning(`\n▸ ${title}${status ? ` → ${status}` : ''}\n`);
+                // One line per tool; progress states only matter when something went wrong.
+                if (type === 'tool_call') toolNote(`- \`${brief(title)}\``);
+                else if (status === 'failed' || status === 'cancelled') toolNote(`- ✗ ${status === 'failed' ? '失败' : '已取消'}：\`${brief(title)}\``);
               }
             }
           }
@@ -347,14 +362,14 @@ export class AgyAdapter {
             const decision = await this.ask(auxiliary ? undefined : agent, { title, detail, options, toolName: upstream.name }, permissionSignal);
             if (permissionSignal.aborted) return { outcome: 'cancelled' };
             if (decision) {
-              if (decision.notice) reasoning(`\n▸ ${decision.notice}\n`);
+              if (decision.notice) toolNote(`- ${decision.notice}`);
               return decision.response;
             }
           } catch {
             if (permissionSignal.aborted) return { outcome: 'cancelled' };
           }
           const deny = options.find(o => o.kind === 'reject_once');
-          reasoning(`\n▸ agy 请求权限：${title}\n${detail}\n未收到许可，已拒绝；可在聊天中回答审批，或用 /agy-mode 查看其他 agy 模式。\n`);
+          toolNote(`- agy 请求权限：\`${brief(title)}\`。未收到许可，已拒绝；可在聊天中回答审批，或用 /agy-mode 查看其他 agy 模式。`);
           return deny ? { outcome: 'selected', optionId: deny.optionId } : { outcome: 'cancelled' };
         },
       });

@@ -92,16 +92,25 @@ export async function apply(ctx, config = {}) {
   }, 'command [args]');
 
   let settingsWrite = Promise.resolve();
-  const json = (value, status = 200) => Response.json(value, { status, headers: HEADERS });
-  const mount = (suffix, methods, handle) => ctx.effect(() => ctx.connection.fetch.register({
-    path: `/api/${BRIDGE_NAME}/${suffix}`, methods, requestBody: 'buffered',
-    fetch: async request => {
-      const admission = ctx.connection.admit(request);
-      if (admission.rejection || admission.peer.principal.kind !== 'owner') return json({ message: 'Forbidden' }, admission.rejection ?? 403);
-      try { return json(await handle(request)); }
-      catch (error) { return json(failureOf(error), 400); }
-    },
-  }), `${BRIDGE_NAME}: ${suffix} route`);
+  // The browser reaches these as exact POST routes on the shared /api channel
+  // (`rpc.call('/api', 'dsh-agy-bridge.<name>', payload)`), the same wire shape
+  // dsh-plugin-subscriptions uses, so they also work from the desktop shell.
+  const answer = (rpcId, result) => Response.json({ type: 'server-response', rpcId, result }, { headers: HEADERS });
+  const mount = (suffix, handle) => {
+    const method = `${BRIDGE_NAME}.${suffix}`;
+    ctx.effect(() => ctx.connection.fetch.register({
+      path: `/api/${method}`, methods: ['POST'], requestBody: 'buffered',
+      fetch: async request => {
+        const admission = ctx.connection.admit(request);
+        if (admission.rejection || admission.peer.principal.kind !== 'owner') return new Response('forbidden', { status: admission.rejection ?? 403 });
+        let envelope;
+        try { envelope = await request.json(); } catch { return new Response('body is not JSON', { status: 400 }); }
+        if (envelope?.type !== 'client-request' || typeof envelope.rpcId !== 'string' || envelope.method !== method) return new Response('bad request', { status: 400 });
+        try { return answer(envelope.rpcId, { ok: true, value: await handle(envelope.payload ?? {}, request.signal) }); }
+        catch (error) { return answer(envelope.rpcId, { ok: false, error: failureOf(error) }); }
+      },
+    }), `${BRIDGE_NAME}: ${suffix} route`);
+  };
   let cachedVersion, cachedQuota;
   function panelModels() {
     const families = adapter.modelCache;
@@ -109,30 +118,29 @@ export async function apply(ctx, config = {}) {
     const visible = new Set(visibleModels(families, adapter.settings.hiddenModels).map(model => model.id));
     return { updatedAt: adapter.modelUpdatedAt, value: families.map(({ id, name, levels }) => ({ id, name, levels, visible: visible.has(id) })) };
   }
-  mount('status', ['GET'], () => ({
+  mount('status', () => ({
     settings: adapter.settings, process: adapter.processState, resolvedExecutable: adapter.binary(),
     version: cachedVersion ?? null, quota: cachedQuota ?? null, models: panelModels() ?? null,
   }));
-  mount('version', ['GET'], async () => {
+  mount('version', async () => {
     const executable = adapter.binary();
     const item = { value: await adapter.version(), updatedAt: Date.now() };
     if (executable === adapter.binary()) cachedVersion = item;
     return item;
   });
-  mount('quota', ['GET'], async () => {
+  mount('quota', async () => {
     const executable = adapter.binary();
     const item = { value: await adapter.quota(), updatedAt: Date.now() };
     if (executable === adapter.binary()) cachedQuota = item;
     return item;
   });
-  mount('models', ['GET'], async () => {
+  mount('models', async () => {
     await adapter.getModelFamilies(true);
     const models = panelModels();
     if (!models) throw new Error('agy 模型目录已切换，请刷新。');
     return models;
   });
-  mount('settings', ['POST'], async request => {
-    const input = await request.json();
+  mount('settings', async input => {
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('设置必须是对象。');
     const change = settingsWrite.then(async () => {
       const next = normalizeSettings({ ...adapter.settings, ...input });
@@ -150,22 +158,22 @@ export async function apply(ctx, config = {}) {
     settingsWrite = change.catch(() => {});
     return change;
   });
-  mount('mode', ['GET', 'POST'], async request => {
+  mount('mode', async (input, signal) => {
     const controller = ctx.get('sessionController');
-    if (request.method === 'GET') {
-      const sessionId = new URL(request.url).searchParams.get('session');
+    if (input.mode === undefined) {
+      const sessionId = input.sessionId;
       const agent = sessionId && ctx.agents.get(sessionId);
       if (agent || !sessionId || !controller) return adapter.modeInfo(agent || undefined);
-      const state = await controller.projections({ sessionId }, request.signal);
+      const state = await controller.projections({ sessionId }, signal);
       const selection = state?.values?.modelSelection;
       const current = selection?.next ?? selection?.lastUsed ?? ctx.get('agentDefaultModel')?.currentSelection();
       return adapter.modeInfo(undefined, current?.provider === 'agy', sessionId);
     }
-    const { sessionId, mode } = await request.json();
+    const { sessionId, mode } = input;
     if (typeof sessionId !== 'string' || !sessionId || !MODES.includes(mode)) throw new Error('请指定当前会话和有效的 agy 模式。');
     let agent = ctx.agents.get(sessionId);
     if (!agent && controller) {
-      const state = await controller.projections({ sessionId }, request.signal);
+      const state = await controller.projections({ sessionId }, signal);
       const selection = state?.values?.modelSelection;
       const current = selection?.next ?? selection?.lastUsed ?? ctx.get('agentDefaultModel')?.currentSelection();
       if (current?.provider === 'agy') {
@@ -175,6 +183,6 @@ export async function apply(ctx, config = {}) {
       }
     }
     if (!usesAgy(agent)) throw new Error(wrongProvider);
-    return adapter.setMode(agent, mode, request.signal);
+    return adapter.setMode(agent, mode, signal);
   });
 }

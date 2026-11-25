@@ -25,6 +25,9 @@ On first startup, if `$DSH_HOME/dsh-agy-bridge/` does not exist and `$DSH_HOME/d
 - The DSH model picker lists model families and their available thinking levels. The default is `High`, or the highest regular level if `High` is unavailable (`Medium`, then `Low`); `XHigh` is used when it is the only level. Models with zero or one fixed level have no extra control. Sessions using old IDs such as `gemini-3.8-flash-low` keep their original level.
 - In **Settings → Antigravity CLI**, version, quota, and models refresh independently. The settings and last successful readings can be shown before a refresh completes. Sign-in status is based on the result of `/usage`.
 - **Model visibility** defaults to all models shown. You can hide a family without changing an existing session. Keep at least one visible; **Select all (reset)** followed by Save restores the full list.
+- Models appear in the picker as `agy-` plus the original name (for example `agy-Gemini 4 Neon`); internal model IDs are unchanged.
+- agy's thoughts, tool calls, and answer stream as separate blocks in order. Each tool takes one line (only the first line of a multi-line command); only failures or cancellations get an extra note.
+- The bundle adds an **Antigravity CLI** agent mode with no DSH prompt, tools, or instruction files. Global plugins such as hooks still apply; pick it manually when using an agy model.
 - **Show agy tool activity in chat** is on by default. Turning it off hides progress lines but not permission questions or notices. Leave **agy executable path** blank to try `~/.local/bin/agy` first, then `PATH`. If supplying a path, use a trusted local executable. Changing it stops the old ACP process and starts a new one on demand.
 
 ### Permissions and workspaces
@@ -43,7 +46,7 @@ On first startup, if `$DSH_HOME/dsh-agy-bridge/` does not exist and `$DSH_HOME/d
 
 ## Limits and verification
 
-- This release advertises text input only and does not map DSH temperature, output limits, or stop sequences. The context window is 1,048,576 based on agy. Existing agy history is not imported.
+- This release advertises text input only and does not map DSH temperature, output limits, or stop sequences. The context window is fixed at 1,048,576 in the bridge; it is not read from agy. Existing agy history is not imported.
 - Failed or cancelled requests are not resent in the same ACP session, but a retry can replay them in a new one. Completed tool actions cannot be undone and can occur again. Read-only progress lines are not a complete log; DSH tool hooks do not intercept agy tools.
 - Auxiliary calls such as titles and compaction open separate temporary ACP sessions; explicit task instructions go into those calls as user text, not into the main conversation. Extra calls from plugins that follow the current model use your agy quota.
 - Run `npm run check` and `npm test` with Node.js 24. `npm run smoke` uses the real signed-in CLI and Flash Low in an isolated temporary directory, **consuming a small amount of real quota**. Pass `npm run smoke -- /path/to/agy` for a custom executable or set `AGY_TEST_PERMISSION=1` to include the optional permission probe.
