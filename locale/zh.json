@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Antigravity CLI 界面桥",
+    "description": "非官方插件，通过 ACP 在 DSH 中使用本机已登录的 Antigravity CLI；不是反向代理，不读取凭据。在「设置 → Antigravity CLI」查额度和管理模型显示。完全权限会自动单次批准 agy 发出的请求；DSH 沙箱不约束 agy 进程。"
+  }
+}

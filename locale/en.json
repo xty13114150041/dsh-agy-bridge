@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Antigravity CLI bridge",
+    "description": "An unofficial DSH interface for your signed-in Antigravity CLI over ACP, not a reverse proxy or credential reader. Open Settings → Antigravity CLI for quota and model visibility. Full access grants one-time approvals for agy requests; the DSH sandbox does not confine agy."
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "name": "dsh-agy-bridge",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "A DeepSeek Harness interface for the local Google Antigravity CLI over ACP.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xty13114150041/dsh-agy-bridge.git"
+  },
+  "homepage": "https://github.com/xty13114150041/dsh-agy-bridge#readme",
+  "keywords": ["deepseek-harness", "dsh", "antigravity", "agy", "agent-client-protocol", "acp"],
+  "engines": { "dsh": "^0.2.2-rc.5" },
+  "exports": {
+    ".": "./host.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": ["host.js", "adapter.js", "acp.js", "model.js", "permission.js", "storage.js", "client.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "README.md", "README.en.md", "LICENSE"],
+  "scripts": {
+    "check": "node --check host.js && node --check adapter.js && node --check acp.js && node --check model.js && node --check permission.js && node --check storage.js && node --check client.js && node --check test/core.test.js && node --check test/permission.test.js && node --check test/storage.test.js && node --check test/smoke.js",
+    "test": "node --test test/*.test.js",
+    "smoke": "node test/smoke.js"
+  },
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "inject": ["@deepseek-ai/dsh-client-ui-settings-general", "@deepseek-ai/dsh-client-ui-conversation", "@deepseek-ai/dsh-api-session-controller", "@deepseek-ai/dsh-client-ui-session", "@deepseek-ai/dsh-client-locale"]
+    }
+  }
+}

@@ -1,0 +1,4 @@
+- insert:
+    - id: dsh-agy-bridge
+      name: dsh-agy-bridge
+      config: {}
