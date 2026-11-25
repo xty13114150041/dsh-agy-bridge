@@ -18,6 +18,7 @@ window.__ModuleLoader__.load({
         mode: 'agy 模式', modeChoose: '默认（由 CLI 决定）', modeHelp: '仅切换 agy 的原生模式。Auto 可能在不询问的情况下执行操作。',
         default: '默认', 'accept-edits': '接受编辑', auto: '自动（可能不询问）', plan: '计划',
         executable: 'agy 可执行文件路径', executableHint: '留空先探测 ~/.local/bin/agy，再尝试系统 PATH。当前使用：{file}',
+        quotaLabel: '额度', quotaRefresh: '刷新额度', quotaFailed: '额度读取失败', quotaHour: '5小时', quotaWeek: '每周', quotaRemaining: '剩余 {percent}%',
       },
       en: {
         nav: 'Antigravity CLI', title: 'Antigravity CLI Bridge', intro: 'Select Google Antigravity CLI in the DSH model picker to use agy in the current workspace.',
@@ -32,6 +33,7 @@ window.__ModuleLoader__.load({
         mode: 'agy mode', modeChoose: 'CLI default', modeHelp: 'Changes the native agy mode only. Auto may act without asking.',
         default: 'Default', 'accept-edits': 'Accept edits', auto: 'Auto (may not ask)', plan: 'Plan',
         executable: 'agy executable path', executableHint: 'Leave blank to try ~/.local/bin/agy first, then PATH. In use: {file}',
+        quotaLabel: 'Quota', quotaRefresh: 'Refresh quota', quotaFailed: 'Could not read quota', quotaHour: '5h', quotaWeek: 'Weekly', quotaRemaining: '{percent}% left',
       },
     };
     const css = `
@@ -248,6 +250,87 @@ window.__ModuleLoader__.load({
       return !sessionId || delegated || provider && provider !== 'agy' ? null : h(ModeSelect, { key: sessionId, t, sessionId, projection: provider, running });
     }
 
+    let quotaCache, quotaInflight;
+    function loadQuota(force) {
+      if (!force && quotaCache && Date.now() - quotaCache.at < 120000) return Promise.resolve(quotaCache);
+      quotaInflight ??= request('quota').then(
+        result => (quotaCache = { rows: result.value, at: Date.now() }),
+      ).finally(() => { quotaInflight = undefined; });
+      return quotaInflight;
+    }
+    const quotaCss = `
+      .dagy-q { display:flex; align-items:center; gap:14px; flex-wrap:nowrap; overflow:hidden; white-space:nowrap; box-sizing:border-box; width:calc(100% - 2 * var(--dsh-composer-side-clearance, 16px)); max-width:var(--dsh-composer-card-max-width, 952px); margin:0 auto; padding:2px 14px; background:transparent; color:var(--dsw-alias-label-secondary); font-size:11px; line-height:14px; }
+      .dagy-q-head { display:flex; align-items:center; gap:4px; flex:none; color:var(--dsw-alias-label-tertiary); font-weight:600; }
+      .dagy-q-group { display:flex; align-items:center; gap:8px; flex:none; transition:opacity .15s; }
+      .dagy-q-group[data-dim] { opacity:.55; }
+      .dagy-q-name { color:var(--dsw-alias-label-primary); font-weight:600; }
+      .dagy-q-item { display:flex; align-items:center; gap:4px; }
+      .dagy-q-track { width:36px; height:5px; border-radius:3px; overflow:hidden; background:var(--dsw-alias-bg-layer-3); }
+      .dagy-q-fill { height:100%; border-radius:3px; transition:width .3s; }
+      .dagy-q-num { min-width:26px; font-variant-numeric:tabular-nums; color:var(--dsw-alias-label-primary); }
+      .dagy-q-btn { margin-left:auto; display:inline-grid; place-items:center; width:20px; height:20px; flex:none; padding:0; border:0; border-radius:6px; background:transparent; color:var(--dsw-alias-label-tertiary); cursor:pointer; }
+      .dagy-q-btn:hover:enabled { background:var(--dsw-alias-interactive-bg-hover); color:var(--dsw-alias-label-primary); }
+      .dagy-q-btn:focus-visible { outline:2px solid var(--dsw-alias-state-business-primary); }
+      .dagy-q-btn[data-busy] svg { animation:dagy-spin 1s linear infinite; }
+      .dagy-q-err { color:var(--dsw-alias-state-error-primary); }
+      @keyframes dagy-spin { to { transform:rotate(360deg); } }
+    `;
+    const quotaColor = remaining => remaining < 10 ? 'var(--dsw-alias-state-error-primary)' : remaining < 30 ? 'var(--dsw-alias-state-warn-primary)' : 'var(--dsw-alias-state-success-primary)';
+
+    function QuotaStrip({ t, model, running }) {
+      const [data, setData] = React.useState(() => quotaCache);
+      const [error, setError] = React.useState();
+      const [loading, setLoading] = React.useState(false);
+      const wasRunning = React.useRef(running);
+      const load = React.useCallback(force => {
+        setLoading(true);
+        loadQuota(force).then(
+          value => { setData(value); setError(undefined); },
+          cause => setError(cause.message),
+        ).finally(() => setLoading(false));
+      }, []);
+      React.useEffect(() => { load(false); }, [load]);
+      React.useEffect(() => {
+        const finished = wasRunning.current && !running;
+        wasRunning.current = running;
+        if (!finished) return undefined;
+        const timer = setTimeout(() => load(true), 1500);
+        return () => clearTimeout(timer);
+      }, [running, load]);
+      const current = /gemini/i.test(model ?? '') ? 'gemini' : /claude|gpt|opus|sonnet/i.test(model ?? '') ? 'claudeGpt' : undefined;
+      const rows = data?.rows ?? [];
+      return h('div', { className: 'dagy-q', role: 'group', 'aria-label': t('quotaLabel') },
+        h('style', null, quotaCss),
+        h('span', { className: 'dagy-q-head' },
+          h('svg', { width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
+            h('path', { d: 'M12 3v18M5 9l7-6 7 6M5 15l7 6 7-6' })), t('quotaLabel')),
+        ['gemini', 'claudeGpt'].map(group => {
+          const items = rows.filter(row => row.group === group);
+          if (!items.length) return null;
+          return h('div', { key: group, className: 'dagy-q-group', ...(current && current !== group ? { 'data-dim': '' } : {}) },
+            h('span', { className: 'dagy-q-name' }, t(group === 'gemini' ? 'gemini' : 'claudeGpt').replace(/ ?(模型|models)$/i, '')),
+            items.map(row => h('span', { key: row.period, className: 'dagy-q-item', title: `${t(row.period === 'week' ? 'week' : 'fiveHours')} · ${t('reset', { at: new Date(row.resetAt).toLocaleString() })}` },
+              h('span', null, t(row.period === 'week' ? 'quotaWeek' : 'quotaHour')),
+              h('span', { className: 'dagy-q-track', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': row.remaining, 'aria-label': `${t(group)} ${t(row.period)}` },
+                h('span', { className: 'dagy-q-fill', style: { display: 'block', width: `${row.remaining}%`, background: quotaColor(row.remaining) } })),
+              h('span', { className: 'dagy-q-num' }, `${row.remaining}%`))));
+        }),
+        error && h('span', { className: 'dagy-q-err', role: 'alert', title: error }, t('quotaFailed')),
+        !rows.length && !error && loading && h('span', null, t('loading')),
+        h('button', { type: 'button', className: 'dagy-q-btn', title: t('quotaRefresh'), 'aria-label': t('quotaRefresh'), disabled: loading, ...(loading ? { 'data-busy': '' } : {}), onClick: () => load(true) },
+          h('svg', { width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
+            h('path', { d: 'M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7' }))));
+    }
+
+    function QuotaDock({ t, sessionId, useSession, useProjection }) {
+      const provider = useProjection('modelSelection', state => (state?.next ?? state?.lastUsed)?.provider);
+      const model = useProjection('modelSelection', state => (state?.next ?? state?.lastUsed)?.model);
+      const preset = useProjection('agentPreset', state => state);
+      const running = useSession(state => state.running);
+      const delegated = useSession(state => state.subagent != null);
+      return !sessionId || delegated || provider !== 'agy' && preset !== 'agy' ? null : h(QuotaStrip, { t, model, running });
+    }
+
     function SectionIcon({ size }) {
       return h('svg', { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
         h('rect', { x: 3, y: 5, width: 18, height: 14, rx: 3 }), h('path', { d: 'm7 9 3 3-3 3m6 0h4' }));
@@ -268,6 +351,9 @@ window.__ModuleLoader__.load({
         ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
           name: 'conversation.input.left', id: `${NS}-mode`, order: 60, locale: NS,
         }, ComposerMode));
+        ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
+          name: 'conversation.input.dock', id: `${NS}-quota`, order: 30, locale: NS,
+        }, QuotaDock));
       },
     };
   },

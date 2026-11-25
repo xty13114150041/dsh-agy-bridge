@@ -28,6 +28,7 @@ On first startup, if `$DSH_HOME/dsh-agy-bridge/` does not exist and `$DSH_HOME/d
 - Models appear in the picker as `agy-` plus the original name (for example `agy-Gemini 4 Neon`); internal model IDs are unchanged.
 - agy's thoughts, tool calls, and answer stream as separate blocks in order. Each tool takes one line (only the first line of a multi-line command); only failures or cancellations get an extra note.
 - The bundle adds an **Antigravity CLI** agent mode with no DSH prompt, tools, or instruction files. Global plugins such as hooks still apply; pick it manually when using an agy model.
+- With an agy model or the Antigravity CLI mode, a quota strip above the composer shows the remaining 5-hour and weekly quota (Gemini and Claude/GPT, with reset time on hover). It refreshes after each reply and has a manual refresh button.
 - **Show agy tool activity in chat** is on by default. Turning it off hides progress lines but not permission questions or notices. Leave **agy executable path** blank to try `~/.local/bin/agy` first, then `PATH`. If supplying a path, use a trusted local executable. Changing it stops the old ACP process and starts a new one on demand.
 
 ### Permissions and workspaces
