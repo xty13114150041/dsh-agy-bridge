@@ -167,8 +167,14 @@ test('auxiliary calls carry caller instructions as text, not DSH system-role con
 });
 
 test('usage keeps cache tokens disjoint; supported retry codes are retained', () => {
-  assert.deepEqual(tokenUsage({ inputTokens: 100, cachedReadTokens: 40, cachedWriteTokens: 10, outputTokens: 20, totalTokens: 120, thoughtTokens: 3 }),
-    { inputTokens: 50, cacheReadTokens: 40, cacheWriteTokens: 10, outputTokens: 20, totalTokens: 120, reasoningTokens: 3 });
+  // agy reports input and cache disjointly already: 2166 + 9411 + 6 = 11583.
+  assert.deepEqual(tokenUsage({ inputTokens: 2166, cachedReadTokens: 9411, cachedWriteTokens: 0, outputTokens: 6, totalTokens: 11583, thoughtTokens: 4 }, 11583),
+    { inputTokens: 2166, cacheReadTokens: 9411, cacheWriteTokens: 0, outputTokens: 6, totalTokens: 11583, reasoningTokens: 4 });
+  // A multi-step turn sums every step; the prompt side is scaled to the live context size.
+  const tool = tokenUsage({ inputTokens: 16700, cachedReadTokens: 19396, cachedWriteTokens: 0, outputTokens: 873, totalTokens: 36969, thoughtTokens: 312 }, 13115);
+  assert.equal(tool.inputTokens + tool.cacheReadTokens + tool.outputTokens, 13115);
+  assert.equal(tool.outputTokens, 873);
+  assert.equal(tool.totalTokens, undefined);
   assert.equal(failureOf(new Error('Authentication required')).code, 'AUTH');
   assert.equal(failureOf(new Error('Quota exceeded')).code, 'QUOTA');
   assert.equal(failureOf(new Error('HTTP 429')).code, 'RATE_LIMIT');

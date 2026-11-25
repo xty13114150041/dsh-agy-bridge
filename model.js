@@ -94,11 +94,25 @@ export function failureOf(error) {
   return { code: ['INVALID_CONFIG', 'INVALID_REQUEST', 'UNKNOWN_MODEL', 'UNSUPPORTED_REASONING_EFFORT', 'UNSUPPORTED_CONTENT', 'TIMEOUT', 'TRANSPORT', 'MALFORMED_RESPONSE'].includes(error?.code) ? error.code : 'UNKNOWN', message };
 }
 
-export function tokenUsage(usage) {
+// agy already reports input and cached tokens disjointly (total = input + output + cachedRead),
+// and its totals add up every model step of a turn. `contextUsed` is the live context size from
+// agy's usage_update; when the summed prompt side exceeds it (tool turns), input and cache are
+// scaled down together so DSH's context ring matches the CLI. Output and thought tokens stay exact.
+export function tokenUsage(usage, contextUsed) {
   if (!usage || !Number.isFinite(usage.inputTokens) || !Number.isFinite(usage.outputTokens)) return undefined;
-  const { inputTokens, outputTokens, totalTokens, cachedReadTokens: cacheReadTokens, cachedWriteTokens: cacheWriteTokens, thoughtTokens: reasoningTokens } = usage;
-  return { inputTokens: Math.max(0, inputTokens - (cacheReadTokens ?? 0) - (cacheWriteTokens ?? 0)), outputTokens,
-    ...Object.fromEntries(Object.entries({ totalTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens }).filter(([, n]) => Number.isFinite(n))) };
+  const { outputTokens, totalTokens, thoughtTokens: reasoningTokens } = usage;
+  let [inputTokens, cacheReadTokens, cacheWriteTokens] = [usage.inputTokens, usage.cachedReadTokens, usage.cachedWriteTokens];
+  const prompt = inputTokens + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0);
+  const room = Number.isFinite(contextUsed) ? Math.max(0, contextUsed - outputTokens) : prompt;
+  const scaled = prompt > room && prompt > 0;
+  if (scaled) {
+    const ratio = room / prompt;
+    inputTokens = Math.round(inputTokens * ratio);
+    if (Number.isFinite(cacheReadTokens)) cacheReadTokens = Math.round(cacheReadTokens * ratio);
+    if (Number.isFinite(cacheWriteTokens)) cacheWriteTokens = Math.round(cacheWriteTokens * ratio);
+  }
+  return { inputTokens, outputTokens,
+    ...Object.fromEntries(Object.entries({ totalTokens: scaled ? undefined : totalTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens }).filter(([, n]) => Number.isFinite(n))) };
 }
 
 export const messageText = message => message?.content.filter(b => b.type === 'text').map(b => b.text).join('\n') ?? '';

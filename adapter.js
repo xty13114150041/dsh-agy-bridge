@@ -327,10 +327,12 @@ export class AgyAdapter {
         const line = String(value ?? '').split('\n')[0].trim();
         return line.length > 160 ? `${line.slice(0, 160)}…` : line;
       };
+      let contextUsed;
       const result = await prompt(client, session.id, [textBlock(request.text)], {
         signal,
         update(update) {
           const type = update.sessionUpdate;
+          if (type === 'usage_update' && Number.isFinite(update.used)) contextUsed = update.used;
           if (type === 'agent_message_chunk' || type === 'agent_thought_chunk') {
             if (update.content?.type !== 'text' || !update.content.text) return;
             const { text } = update.content;
@@ -373,7 +375,7 @@ export class AgyAdapter {
           return deny ? { outcome: 'selected', optionId: deny.optionId } : { outcome: 'cancelled' };
         },
       });
-      const usage = tokenUsage(result.usage);
+      const usage = tokenUsage(result.usage, contextUsed);
       if (usage) emit({ type: 'usage', usage });
       if (signal.aborted || result.stopReason === 'cancelled') return abortFinish();
       if (result.stopReason === 'refusal') return errorFinish('CONTENT_REFUSED', 'agy refused the request');
