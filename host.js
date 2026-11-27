@@ -4,7 +4,7 @@ import path from 'node:path';
 import { BRIDGE_NAME, dataDirectory } from './storage.js';
 import { AgyAdapter, normalizeSettings, readJson, writeJson } from './adapter.js';
 import { MODES, failureOf, validateHiddenModels, visibleModels } from './model.js';
-import { createPermissionBridge } from './permission.js';
+import { createPermissionBridge, createQuestionBridge } from './permission.js';
 
 export const inject = ['llm', 'agents', 'workingDirectory', 'tools', 'commands', 'connection'];
 const HEADERS = { 'cache-control': 'no-store' };
@@ -23,6 +23,7 @@ export async function apply(ctx, config = {}) {
     getAgent: id => ctx.agents.get(id),
     cwdOf: agent => ctx.workingDirectory.get(agent.session),
     ask: createPermissionBridge(ctx),
+    askUser: createQuestionBridge(ctx),
   });
   ctx.effect(() => () => adapter.dispose(), `${BRIDGE_NAME}: ACP process`);
   ctx.llm.registerAdapter(['agy'], adapter);

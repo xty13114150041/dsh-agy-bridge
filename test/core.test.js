@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { frameReader } from '../acp.js';
+import { addUsage, frameReader } from '../acp.js';
 import { AgyAdapter, normalizeSettings } from '../adapter.js';
 import { createPermissionBridge } from '../permission.js';
-import { failureOf, modelRoute, parseModels, parseQuota, planPrompt, renderHistory, tokenUsage, validateHiddenModels } from '../model.js';
+import { elicitationQuestions, elicitationResult, failureOf, modelRoute, parseModels, parseQuota, planPrompt, renderHistory, tokenUsage, validateHiddenModels } from '../model.js';
 
 const message = (id, role, text, kind = role) => ({ id, role, source: { kind }, content: [{ type: 'text', text }] });
 const user = (id, text, kind) => message(id, 'user', text, kind);
@@ -96,7 +96,7 @@ for (const [showToolActivity, fullAccess] of [[true, false], [false, false], [fa
   const calls = [];
   let update;
   const client = {
-    onPermission: new Map(), subscribe(_id, listener) { update = listener; return () => {}; },
+    onPermission: new Map(), onElicit: new Map(), subscribe(_id, listener) { update = listener; return () => {}; },
     async request(method, params) {
       calls.push([method, params]);
       if (method === 'session/prompt') {
@@ -188,7 +188,7 @@ test('thoughts, tool lines, and answer text stream as separate ordered blocks', 
   adapter.modelCache = models;
   let update;
   const client = {
-    onPermission: new Map(), subscribe(_id, listener) { update = listener; return () => {}; },
+    onPermission: new Map(), onElicit: new Map(), subscribe(_id, listener) { update = listener; return () => {}; },
     async request(method) {
       if (method === 'session/prompt') {
         const say = (sessionUpdate, text) => update({ sessionUpdate, content: { type: 'text', text } });
@@ -222,7 +222,7 @@ test('forced interjection cancels the turn but finishes as a normal stop', async
   adapter.modelCache = models;
   let update, finishPrompt;
   const client = {
-    onPermission: new Map(), subscribe(_id, listener) { update = listener; return () => {}; },
+    onPermission: new Map(), onElicit: new Map(), subscribe(_id, listener) { update = listener; return () => {}; },
     notify(method) { if (method === 'session/cancel') finishPrompt({ stopReason: 'cancelled' }); },
     request(method) {
       if (method === 'session/prompt') return new Promise(resolve => { finishPrompt = resolve; });
@@ -262,7 +262,7 @@ test('steer joins the running turn; a refused steer falls back to the queue', as
     adapter.modelCache = models;
     let update, finishFirst, finishSecond, rejectSecond, prompts = 0;
     const client = {
-      onPermission: new Map(), subscribe(_id, listener) { update = listener; return () => {}; },
+      onPermission: new Map(), onElicit: new Map(), subscribe(_id, listener) { update = listener; return () => {}; },
       request(method) {
         if (method !== 'session/prompt') return Promise.resolve({});
         prompts += 1;
@@ -295,7 +295,7 @@ test('steer joins the running turn; a refused steer falls back to the queue', as
     const chunks = await run;
     assert.equal(chunks.at(-1).reason.kind, 'stop');
     assert.deepEqual(saved.at(-1).steered, refuse ? [] : ['u2']);
-    assert.equal(chunks.find(chunk => chunk.type === 'usage').usage.outputTokens, refuse ? 1 : 4, 'the last prompt carries the whole turn usage');
+    assert.equal(chunks.find(chunk => chunk.type === 'usage').usage.outputTokens, refuse ? 1 : 5, 'a steered turn adds up the usage of both prompts');
   }
 });
 
@@ -306,4 +306,26 @@ test('a message already steered into the previous turn is not sent again', () =>
   assert.equal(plan.text, '');
   const next = planPrompt(messages, { ids: ['u1'], last: 'first', dirty: false, reply: 'answer' });
   assert.equal(next.text, 'steered');
+});
+
+test('usage of the prompts in one steered turn is added field by field', () => {
+  assert.deepEqual(addUsage({ inputTokens: 1, outputTokens: 2, thoughtTokens: 1 }, { inputTokens: 10, outputTokens: 20, cachedReadTokens: 5 }),
+    { inputTokens: 11, outputTokens: 22, cachedReadTokens: 5, thoughtTokens: 1 });
+  assert.equal(addUsage(undefined, undefined), undefined);
+});
+
+test('agy questions map to DSH question cards and back to form content', () => {
+  const schema = { requestedSchema: { type: 'object', properties: {
+    q1: { type: 'array', title: 'Fruits?', items: { anyOf: [{ const: '1', title: 'Apple' }, { const: '2', title: 'Pear' }] } },
+    q1_other: { type: 'string', title: 'Other' },
+    q2: { type: 'string', title: 'Dessert?', oneOf: [{ const: '1', title: 'Yes' }, { const: '2', title: 'No' }] },
+    q2_other: { type: 'string', title: 'Other' },
+  } } };
+  const form = elicitationQuestions(schema);
+  assert.deepEqual(form.questions.map(q => [q.id, q.question, q.multiSelect ?? false, q.options.map(o => o.label)]),
+    [['q1', 'Fruits?', true, ['Apple', 'Pear']], ['q2', 'Dessert?', false, ['Yes', 'No']]]);
+  assert.deepEqual(elicitationResult({ answers: [{ id: 'q1', selected: ['Apple', 'Pear'] }, { id: 'q2', selected: [], custom: 'later' }] }, form),
+    { action: 'accept', content: { q1: ['1', '2'], q2_other: 'later' } });
+  assert.deepEqual(elicitationResult({ answers: [{ id: 'q1', selected: [] }] }, form), { action: 'decline' });
+  assert.equal(elicitationQuestions({ requestedSchema: { properties: {} } }), undefined);
 });

@@ -4,7 +4,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { AcpClient, prompt, runAgy, textBlock } from './acp.js';
-import { MODES, PROVIDER_NAME, failureOf, messageText, modelRoute, parseModels, parseQuota, permissionDescription, planPrompt, tokenUsage, visibleModels } from './model.js';
+import { MODES, PROVIDER_NAME, failureOf, elicitationQuestions, elicitationResult, messageText, modelRoute, parseModels, parseQuota, permissionDescription, planPrompt, tokenUsage, visibleModels } from './model.js';
 
 const abortFinish = () => ({ kind: 'aborted', failure: { code: 'ABORTED', message: 'agy request cancelled' } });
 const errorFinish = (code, message) => ({ kind: 'error', failure: { code, message } });
@@ -52,13 +52,14 @@ export class AgyAdapter {
   saveQueue = Promise.resolve();
   disposed = false;
 
-  constructor({ directory, settings, records, getAgent, cwdOf, ask }) {
+  constructor({ directory, settings, records, getAgent, cwdOf, ask, askUser }) {
     this.mappingFile = path.join(directory, 'sessions.json');
     this.settings = normalizeSettings(settings);
     this.records = new Map(Object.entries(records));
     this.getAgent = getAgent;
     this.cwdOf = cwdOf;
     this.ask = ask;
+    this.askUser = askUser;
   }
 
   binary() {
@@ -366,6 +367,17 @@ export class AgyAdapter {
       const result = await prompt(client, session.id, [textBlock(request.text)], {
         signal: AbortSignal.any([signal, interrupt.signal]),
         steers: turn.steers,
+        elicit: async (params, elicitSignal) => {
+          const form = params.mode === 'form' || !params.mode ? elicitationQuestions(params) : undefined;
+          if (!form || !this.askUser || auxiliary) return { action: 'decline' };
+          turn.asking += 1;
+          try {
+            const answer = await this.askUser(agent, form.questions, elicitSignal);
+            return answer ? elicitationResult(answer, form) : { action: 'decline' };
+          } catch {
+            return { action: 'cancel' };
+          } finally { turn.asking -= 1; }
+        },
         update(update) {
           const type = update.sessionUpdate;
           if (type === 'usage_update' && Number.isFinite(update.used)) contextUsed = update.used;

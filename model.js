@@ -180,3 +180,39 @@ export function permissionDescription(toolCall = {}) {
   }).filter(Boolean).join('\n');
   return { title, detail: [input, paths, content].filter(Boolean).join('\n\n') || title };
 }
+
+// agy asks questions through ACP elicitation/create (form mode): one property per question, plus an optional
+// "<key>_other" free-text companion. Map them to DSH question cards and the answers back to form content.
+export function elicitationQuestions(params) {
+  const properties = params?.requestedSchema?.properties ?? {};
+  const questions = [];
+  const fields = new Map();
+  for (const [key, field] of Object.entries(properties)) {
+    if (key.endsWith('_other') && Object.hasOwn(properties, key.slice(0, -6))) continue;
+    const many = field.type === 'array';
+    const choices = (many ? field.items : field)?.oneOf ?? (many ? field.items : field)?.anyOf
+      ?? ((many ? field.items : field)?.enum ?? []).map(value => ({ const: value, title: String(value) }));
+    const options = choices.map(choice => ({ value: choice.const, label: String(choice.title ?? choice.const) }));
+    if (new Set(options.map(option => option.label)).size !== options.length) return undefined;
+    questions.push({
+      id: key, question: field.title ?? key, header: 'Google Antigravity CLI',
+      ...options.length ? { options: options.map(({ label }) => ({ label })) } : {},
+      ...many ? { multiSelect: true } : {},
+    });
+    fields.set(key, { options, many, other: Object.hasOwn(properties, `${key}_other`) });
+  }
+  return questions.length ? { questions, fields } : undefined;
+}
+
+export function elicitationResult(answer, { fields }) {
+  const content = {};
+  for (const [key, { options, many, other }] of fields) {
+    const item = answer?.answers?.find(entry => entry.id === key);
+    if (!item) continue;
+    const values = (item.selected ?? []).map(label => options.find(option => option.label === label)?.value).filter(value => value !== undefined);
+    if (values.length) content[key] = many ? values : values[0];
+    const custom = item.custom?.trim();
+    if (custom) content[other ? `${key}_other` : key] = custom;
+  }
+  return Object.keys(content).length ? { action: 'accept', content } : { action: 'decline' };
+}

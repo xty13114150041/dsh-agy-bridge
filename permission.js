@@ -100,3 +100,12 @@ export function createPermissionBridge(ctx, timeoutMs = 120_000) {
     return { response: approvalDecision('unavailable', options), notice: `agy 请求权限：${title}。审批不可用或已超时，未获得批准。` };
   };
 }
+
+// agy's own questions (ask_question) are shown on DSH's built-in question card.
+export function createQuestionBridge(ctx) {
+  return async (agent, questions, signal) => {
+    const userQuestions = ctx.get('userQuestions');
+    if (!userQuestions || !agent || agent.session.header.origin === 'subagent' || signal.aborted) return undefined;
+    return userQuestions.ask({ agent, signal, questions });
+  };
+}

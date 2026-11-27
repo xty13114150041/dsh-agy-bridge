@@ -42,6 +42,7 @@ export class AcpClient {
   listeners = new Map();
   sessionInfo = new Map();
   onPermission = new Map();
+  onElicit = new Map();
   stderr = '';
   failure = null;
 
@@ -70,6 +71,7 @@ export class AcpClient {
       this.listeners.clear();
       this.sessionInfo.clear();
       this.onPermission.clear();
+      this.onElicit.clear();
       if (this.child.pid && this.child.exitCode === null && this.child.signalCode === null) {
         this.child.kill('SIGTERM');
         const kill = setTimeout(() => this.child.kill('SIGKILL'), 1500);
@@ -81,7 +83,7 @@ export class AcpClient {
   }
 
   async initialize() {
-    const result = await this.request('initialize', { protocolVersion: 1, clientCapabilities: {} });
+    const result = await this.request('initialize', { protocolVersion: 1, clientCapabilities: { elicitation: { form: {} } } });
     if (result.protocolVersion !== 1) throw new Error(`agy ACP protocol version ${result.protocolVersion} is unsupported`);
     this.capabilities = result.agentCapabilities ?? {};
     return result;
@@ -144,7 +146,10 @@ export class AcpClient {
   async answerRequest({ id, method, params }) {
     let reply;
     try {
-      if (method !== 'session/request_permission') {
+      if (method === 'elicitation/create') {
+        const choose = this.onElicit.get(params.sessionId);
+        reply = { result: choose ? await choose(params) : { action: 'cancel' } };
+      } else if (method !== 'session/request_permission') {
         reply = { error: { code: -32601, message: `ACP client does not implement ${method}` } };
       } else {
         const choose = this.onPermission.get(params.sessionId);
@@ -161,16 +166,27 @@ export class AcpClient {
   }
 }
 
+const USAGE_FIELDS = ['inputTokens', 'outputTokens', 'cachedReadTokens', 'cachedWriteTokens', 'thoughtTokens', 'totalTokens'];
+export function addUsage(a, b) {
+  if (!a || !b) return a ?? b;
+  return Object.fromEntries(USAGE_FIELDS.filter(key => Number.isFinite(a[key]) || Number.isFinite(b[key])).map(key => [key, (a[key] ?? 0) + (b[key] ?? 0)]));
+}
+
 // Track updates and keep the session reserved until agy acknowledges cancellation.
-export async function prompt(client, sessionId, blocks, { signal, update, permission, steers } = {}) {
+export async function prompt(client, sessionId, blocks, { signal, update, permission, elicit, steers } = {}) {
   signal?.throwIfAborted();
   const lifetime = new AbortController();
   const off = client.subscribe(sessionId, update ?? (() => {}));
   const cancelled = { outcome: 'cancelled' };
-  let settlePermission;
+  let settlePermission, settleElicit;
   const permissionAborted = new Promise(resolve => { settlePermission = resolve; });
+  const elicitAborted = new Promise(resolve => { settleElicit = resolve; });
+  const declined = { action: 'cancel' };
   client.onPermission.set(sessionId, params => lifetime.signal.aborted ? cancelled : Promise.race([
     Promise.resolve().then(() => permission?.(params, lifetime.signal) ?? cancelled), permissionAborted,
+  ]));
+  client.onElicit.set(sessionId, params => lifetime.signal.aborted ? declined : Promise.race([
+    Promise.resolve().then(() => elicit?.(params, lifetime.signal) ?? declined), elicitAborted,
   ]));
   let timer;
   const cancel = () => {
@@ -182,21 +198,31 @@ export async function prompt(client, sessionId, blocks, { signal, update, permis
     }
     lifetime.abort();
     settlePermission(cancelled);
+    settleElicit(declined);
   };
   signal?.addEventListener('abort', cancel, { once: true });
   try {
     let result = await client.request('session/prompt', { sessionId, prompt: blocks }, 0);
     // A steered message becomes the turn's new owner: this prompt answers at once and the last steer ends the turn.
-    while (steers?.length) result = (await steers.shift()) ?? result;
+    // Each prompt reports only the model requests it ran, so the turn's usage is their sum.
+    let usage = result.usage;
+    while (steers?.length) {
+      const next = await steers.shift();
+      if (!next) continue;
+      result = next;
+      usage = addUsage(usage, next.usage);
+    }
     if (steers) steers.closed = true;
-    return result;
+    return usage ? { ...result, usage } : result;
   } finally {
     if (steers) steers.closed = true;
     clearTimeout(timer);
     lifetime.abort();
     settlePermission(cancelled);
+    settleElicit(declined);
     signal?.removeEventListener('abort', cancel);
     client.onPermission.delete(sessionId);
+    client.onElicit.delete(sessionId);
     off();
   }
 }
