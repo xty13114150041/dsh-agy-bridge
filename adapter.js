@@ -4,7 +4,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { AcpClient, prompt, runAgy, textBlock } from './acp.js';
-import { MODES, PROVIDER_NAME, failureOf, modelRoute, parseModels, parseQuota, permissionDescription, planPrompt, tokenUsage, visibleModels } from './model.js';
+import { MODES, PROVIDER_NAME, failureOf, messageText, modelRoute, parseModels, parseQuota, permissionDescription, planPrompt, tokenUsage, visibleModels } from './model.js';
 
 const abortFinish = () => ({ kind: 'aborted', failure: { code: 'ABORTED', message: 'agy request cancelled' } });
 const errorFinish = (code, message) => ({ kind: 'error', failure: { code, message } });
@@ -42,6 +42,9 @@ export class AgyAdapter {
   queues = new Map();
   modeWrites = new Map();
   active = new Map();
+  interrupts = new Map();
+  interjecting = new Map();
+  turns = new Map();
   opened = new Map();
   modelCache = null;
   modelUpdatedAt = null;
@@ -127,6 +130,30 @@ export class AgyAdapter {
   providerRetryPolicy() { return undefined; }
   imageRequestPricing() { return undefined; }
   imageRequestTarget(_provider, _model, { width, height, bytes }) { return { width, height, maxBytes: bytes }; }
+
+  // Interjection while agy is answering: 'cancel' cancels the turn so the queued DSH message goes out at once.
+  interrupt(id) {
+    const controller = this.interjecting.get(id) === 'cancel' && this.interrupts.get(id);
+    if (!controller || controller.signal.aborted) return false;
+    controller.abort();
+    return true;
+  }
+
+  // 'steer' sends the message into the running turn as a second prompt (agy >= 1.5.0). The running tool keeps going;
+  // agy handles the message once it is done. Returns false when the message must simply queue instead.
+  steer(id, message) {
+    const turn = this.interjecting.get(id) === 'steer' && this.turns.get(id);
+    const text = messageText(message).trim();
+    if (!turn || !text || !message.id || turn.asking || turn.steers.closed || turn.steered.has(message.id)) return false;
+    turn.steered.add(message.id);
+    turn.note('- ↪ 新消息已并入当前回合，agy 完成手头的步骤后处理');
+    turn.steers.push(turn.client.request('session/prompt', { sessionId: turn.sessionId, prompt: [textBlock(text)] }, 0).catch(() => {
+      // agy turned it down (for example while waiting for an approval): leave it to DSH's normal queue.
+      turn.steered.delete(message.id);
+      turn.note('- 新消息未能并入当前回合，已改为排队');
+    }));
+    return true;
+  }
 
   async getModelFamilies(refresh = false) {
     if (this.modelLookup) return this.modelLookup;
@@ -291,6 +318,11 @@ export class AgyAdapter {
     const plan = forceNew => planPrompt(options.messages, old, { purpose: options.purpose, system: options.system, forceNew });
     let request = plan(!matching);
     if (request.error) return errorFinish('INVALID_REQUEST', request.error);
+    if (request.steered && !auxiliary) {
+      // Everything new was already steered into the previous turn; there is nothing left to send.
+      await this.save(key, { ...request.cursor, dirty: false, reply: undefined, steered: undefined });
+      return { kind: 'stop' };
+    }
     if (!request.text) return errorFinish('INVALID_REQUEST', '没有可发送给 agy 的新用户消息；未重复执行上一轮。');
     signal.throwIfAborted();
     const client = await this.acquire();
@@ -328,8 +360,12 @@ export class AgyAdapter {
         return line.length > 160 ? `${line.slice(0, 160)}…` : line;
       };
       let contextUsed;
+      const interrupt = new AbortController();
+      const turn = { client, sessionId: session.id, steers: [], steered: new Set(), asking: 0, note: toolNote };
+      if (!auxiliary) { this.interrupts.set(key, interrupt); this.turns.set(key, turn); }
       const result = await prompt(client, session.id, [textBlock(request.text)], {
-        signal,
+        signal: AbortSignal.any([signal, interrupt.signal]),
+        steers: turn.steers,
         update(update) {
           const type = update.sessionUpdate;
           if (type === 'usage_update' && Number.isFinite(update.used)) contextUsed = update.used;
@@ -360,6 +396,8 @@ export class AgyAdapter {
           const upstream = { ...seen.get(toolCall.toolCallId), ...toolCall };
           const { title, detail } = permissionDescription(upstream);
           if (permissionSignal.aborted) return { outcome: 'cancelled' };
+          turn.asking += 1;
+          try { return await (async () => {
           try {
             const decision = await this.ask(auxiliary ? undefined : agent, { title, detail, options, toolName: upstream.name }, permissionSignal);
             if (permissionSignal.aborted) return { outcome: 'cancelled' };
@@ -373,17 +411,26 @@ export class AgyAdapter {
           const deny = options.find(o => o.kind === 'reject_once');
           toolNote(`- agy 请求权限：\`${brief(title)}\`。未收到许可，已拒绝；可在聊天中回答审批，或用 /agy-mode 查看其他 agy 模式。`);
           return deny ? { outcome: 'selected', optionId: deny.optionId } : { outcome: 'cancelled' };
+          })(); } finally { turn.asking -= 1; }
         },
       });
+      const interrupted = interrupt.signal.aborted && !signal.aborted && result.stopReason === 'cancelled';
+      if (interrupted) toolNote('- ↯ 已被新消息打断');
       const usage = tokenUsage(result.usage, contextUsed);
       if (usage) emit({ type: 'usage', usage });
+      // A normal stop lets DSH claim the queued message as the next step of this turn.
+      if (interrupted) {
+        if (!auxiliary) await this.save(key, { dirty: false, reply, steered: [...turn.steered] });
+        return { kind: 'stop' };
+      }
       if (signal.aborted || result.stopReason === 'cancelled') return abortFinish();
       if (result.stopReason === 'refusal') return errorFinish('CONTENT_REFUSED', 'agy refused the request');
       if (result.stopReason !== 'end_turn') return errorFinish('INVALID_RESPONSE', `agy stopped: ${result.stopReason}`);
       if (!output) return errorFinish('EMPTY_RESPONSE', 'agy 未返回内容。');
-      if (!auxiliary) await this.save(key, { dirty: false, reply });
+      if (!auxiliary) await this.save(key, { dirty: false, reply, steered: [...turn.steered] });
       return { kind: 'stop' };
     } finally {
+      if (!auxiliary) { this.interrupts.delete(key); this.turns.delete(key); }
       this.active.delete(auxiliary ? session.id : key);
       if (auxiliary) await this.close(client, session.id);
     }

@@ -139,11 +139,17 @@ export function planPrompt(messages, previous, { purpose, system, forceNew = fal
   const prefix = !!previous?.ids && count <= history.length && previous.ids.every((id, i) => id === ids[i])
     && previous.last === messageText(history[count - 1]);
   const after = history.slice(count);
-  const replyAgrees = previous?.reply === undefined || (after[0]?.role === 'assistant' && messageText(after[0]) === previous.reply);
-  const delta = after.slice(previous?.reply === undefined ? 0 : 1);
+  // An interrupted turn can leave an empty reply that DSH never commits as an assistant message.
+  const expectsReply = previous?.reply !== undefined && !(previous.reply === '' && after[0]?.role !== 'assistant');
+  const replyAgrees = !expectsReply || (after[0]?.role === 'assistant' && messageText(after[0]) === previous.reply);
+  const pending = after.slice(expectsReply ? 1 : 0);
+  // Messages steered into the previous turn were already answered there.
+  const steered = new Set(previous?.steered ?? []);
+  const delta = pending.filter(m => !steered.has(m.id));
   const reuse = !purpose && !forceNew && prefix && !previous.dirty && replyAgrees && delta.every(m => m.role === 'user');
   // Same request after success but before the loop commits the assistant: no resend to that ACP session.
   if (!purpose && !forceNew && prefix && !previous.dirty && after.length === 0) return { reuse: true, text: '', cursor };
+  if (!purpose && !forceNew && prefix && !previous.dirty && replyAgrees && pending.length && !delta.length) return { reuse: true, text: '', cursor, steered: true };
   if (purpose) {
     const text = renderHistory(history);
     return { reuse: false, cursor, text: [system && `[任务指令]\n${system}\n[/任务指令]`, text].filter(Boolean).join('\n\n') };

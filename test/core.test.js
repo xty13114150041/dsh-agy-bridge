@@ -213,3 +213,97 @@ test('thoughts, tool lines, and answer text stream as separate ordered blocks', 
   for (const chunk of chunks) if (chunk.text !== undefined) blocks.set(chunk.index, (blocks.get(chunk.index) ?? '') + chunk.text);
   assert.deepEqual([...blocks.values()], ['think 1 more', '**agy 工具**\n- `ls -la`\n- `cat x`\n', 'think 2', 'answer']);
 });
+
+test('forced interjection cancels the turn but finishes as a normal stop', async () => {
+  const adapter = new AgyAdapter({ directory: '.', settings: { showToolActivity: true }, records: {}, ask: async () => undefined,
+    getAgent: () => ({ session: { header: {} } }), cwdOf: () => '.' });
+  const saved = [];
+  adapter.save = async (_key, patch) => { saved.push(patch); };
+  adapter.modelCache = models;
+  let update, finishPrompt;
+  const client = {
+    onPermission: new Map(), subscribe(_id, listener) { update = listener; return () => {}; },
+    notify(method) { if (method === 'session/cancel') finishPrompt({ stopReason: 'cancelled' }); },
+    request(method) {
+      if (method === 'session/prompt') return new Promise(resolve => { finishPrompt = resolve; });
+      return Promise.resolve({});
+    },
+  };
+  adapter.acquire = async () => client;
+  adapter.open = async () => ({ id: 'temp' });
+  adapter.close = async () => {};
+  const prepared = await adapter.prepareCall('agy', 'gemini-4-neon');
+  const run = Array.fromAsync(prepared.stream({ model: 'gemini-4-neon', reasoningEffort: 'medium', sessionId: 't', messages: [user('u', 'x')] }));
+  while (!adapter.interrupts.has('t')) await new Promise(resolve => setTimeout(resolve, 5));
+  update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'half' } });
+  assert.equal(adapter.interrupt('t'), false, 'not enabled for this session');
+  adapter.interjecting.set('t', 'cancel');
+  assert.equal(adapter.interrupt('t'), true);
+  const chunks = await run;
+  assert.equal(chunks.at(-1).type, 'finish');
+  assert.equal(chunks.at(-1).reason.kind, 'stop');
+  assert.deepEqual(saved.at(-1), { dirty: false, reply: 'half', steered: [] });
+  assert.equal(adapter.interrupts.has('t'), false);
+});
+
+test('an interrupted turn with no committed reply still lets the session be reused', () => {
+  const messages = [user('u1', 'first'), user('u2', 'second')];
+  const plan = planPrompt(messages, { ids: ['u1'], last: 'first', dirty: false, reply: '' });
+  assert.equal(plan.reuse, true);
+  assert.equal(plan.text, 'second');
+});
+
+test('steer joins the running turn; a refused steer falls back to the queue', async () => {
+  for (const refuse of [false, true]) {
+    const adapter = new AgyAdapter({ directory: '.', settings: { showToolActivity: true }, records: {}, ask: async () => undefined,
+      getAgent: () => ({ session: { header: {} } }), cwdOf: () => '.' });
+    const saved = [];
+    adapter.save = async (_key, patch) => { saved.push(patch); };
+    adapter.modelCache = models;
+    let update, finishFirst, finishSecond, rejectSecond, prompts = 0;
+    const client = {
+      onPermission: new Map(), subscribe(_id, listener) { update = listener; return () => {}; },
+      request(method) {
+        if (method !== 'session/prompt') return Promise.resolve({});
+        prompts += 1;
+        if (prompts === 1) return new Promise(resolve => { finishFirst = resolve; });
+        return new Promise((resolve, reject) => { finishSecond = resolve; rejectSecond = reject; });
+      },
+    };
+    adapter.acquire = async () => client;
+    adapter.open = async () => ({ id: 'temp' });
+    adapter.close = async () => {};
+    const prepared = await adapter.prepareCall('agy', 'gemini-4-neon');
+    const run = Array.fromAsync(prepared.stream({ model: 'gemini-4-neon', reasoningEffort: 'medium', sessionId: 't', messages: [user('u', 'x')] }));
+    while (!adapter.turns.has('t')) await new Promise(resolve => setTimeout(resolve, 5));
+    const message = user('u2', 'change course');
+    assert.equal(adapter.steer('t', message), false, 'queue mode does not steer');
+    adapter.interjecting.set('t', 'steer');
+    assert.equal(adapter.steer('t', message), true);
+    assert.equal(prompts, 2);
+    if (refuse) {
+      rejectSecond(new Error("Can't add this prompt"));
+      await new Promise(resolve => setTimeout(resolve, 5));
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'first answer' } });
+      finishFirst({ stopReason: 'end_turn', usage: { inputTokens: 5, outputTokens: 1 } });
+    } else {
+      finishFirst({ stopReason: 'end_turn', usage: { inputTokens: 5, outputTokens: 1 } });
+      await new Promise(resolve => setTimeout(resolve, 5));
+      update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'steered answer' } });
+      finishSecond({ stopReason: 'end_turn', usage: { inputTokens: 9, outputTokens: 4 } });
+    }
+    const chunks = await run;
+    assert.equal(chunks.at(-1).reason.kind, 'stop');
+    assert.deepEqual(saved.at(-1).steered, refuse ? [] : ['u2']);
+    assert.equal(chunks.find(chunk => chunk.type === 'usage').usage.outputTokens, refuse ? 1 : 4, 'the last prompt carries the whole turn usage');
+  }
+});
+
+test('a message already steered into the previous turn is not sent again', () => {
+  const messages = [user('u1', 'first'), assistant('a1', 'answer'), user('u2', 'steered')];
+  const plan = planPrompt(messages, { ids: ['u1'], last: 'first', dirty: false, reply: 'answer', steered: ['u2'] });
+  assert.equal(plan.steered, true);
+  assert.equal(plan.text, '');
+  const next = planPrompt(messages, { ids: ['u1'], last: 'first', dirty: false, reply: 'answer' });
+  assert.equal(next.text, 'steered');
+});

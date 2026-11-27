@@ -18,7 +18,7 @@ window.__ModuleLoader__.load({
         mode: 'agy 模式', modeChoose: '默认（由 CLI 决定）', modeHelp: '仅切换 agy 的原生模式。Auto 可能在不询问的情况下执行操作。',
         default: '默认', 'accept-edits': '接受编辑', auto: '自动（可能不询问）', plan: '计划',
         executable: 'agy 可执行文件路径', executableHint: '留空先探测 ~/.local/bin/agy，再尝试系统 PATH。当前使用：{file}',
-        quotaLabel: '额度', quotaRefresh: '刷新额度', quotaFailed: '额度读取失败', quotaHour: '5小时', quotaWeek: '每周', quotaRemaining: '剩余 {percent}%',
+        interject: '插话', interjectHelp: 'agy 回答过程中发送消息时：排队＝等本轮结束再发；并入＝送进当前回合，agy 做完手头的工具后处理；打断＝立刻取消当前回合再发（会中断正在执行的工具）。', interjectQueue: '排队', interjectSteer: '并入', interjectCancel: '打断', quotaLabel: '额度', quotaRefresh: '刷新额度', quotaFailed: '额度读取失败', quotaHour: '5小时', quotaWeek: '每周', quotaRemaining: '剩余 {percent}%',
       },
       en: {
         nav: 'Antigravity CLI', title: 'Antigravity CLI Bridge', intro: 'Select Google Antigravity CLI in the DSH model picker to use agy in the current workspace.',
@@ -33,7 +33,7 @@ window.__ModuleLoader__.load({
         mode: 'agy mode', modeChoose: 'CLI default', modeHelp: 'Changes the native agy mode only. Auto may act without asking.',
         default: 'Default', 'accept-edits': 'Accept edits', auto: 'Auto (may not ask)', plan: 'Plan',
         executable: 'agy executable path', executableHint: 'Leave blank to try ~/.local/bin/agy first, then PATH. In use: {file}',
-        quotaLabel: 'Quota', quotaRefresh: 'Refresh quota', quotaFailed: 'Could not read quota', quotaHour: '5h', quotaWeek: 'Weekly', quotaRemaining: '{percent}% left',
+        interject: 'Interject', interjectHelp: 'When you send a message while agy is answering: Queue = send after the turn ends; Steer = join the running turn, agy handles it after its current tool; Cancel = cancel the turn now and send (interrupts a running tool).', interjectQueue: 'Queue', interjectSteer: 'Steer', interjectCancel: 'Cancel', quotaLabel: 'Quota', quotaRefresh: 'Refresh quota', quotaFailed: 'Could not read quota', quotaHour: '5h', quotaWeek: 'Weekly', quotaRemaining: '{percent}% left',
       },
     };
     const css = `
@@ -331,6 +331,41 @@ window.__ModuleLoader__.load({
       return !sessionId || delegated || provider !== 'agy' && preset !== 'agy' ? null : h(QuotaStrip, { t, model, running });
     }
 
+    const interjectCache = new Map();
+    function InterjectSelect({ t, sessionId, useSession, useProjection }) {
+      const provider = useProjection('modelSelection', state => (state?.next ?? state?.lastUsed)?.provider);
+      const preset = useProjection('agentPreset', state => state);
+      const delegated = useSession(state => state.subagent != null);
+      const [mode, setMode] = React.useState(() => interjectCache.get(sessionId) ?? 'queue');
+      const [error, setError] = React.useState();
+      const show = !!sessionId && !delegated && (provider === 'agy' || preset === 'agy');
+      React.useEffect(() => {
+        if (!show) return undefined;
+        const controller = new AbortController();
+        request('interject', { body: { sessionId }, signal: controller.signal }).then(
+          value => { interjectCache.set(sessionId, value.mode); setMode(value.mode); },
+          () => {},
+        );
+        return () => controller.abort();
+      }, [show, sessionId]);
+      if (!show) return null;
+      async function change(event) {
+        const next = event.target.value;
+        const before = mode;
+        setMode(next);
+        setError(undefined);
+        try {
+          const value = await request('interject', { body: { sessionId, mode: next } });
+          interjectCache.set(sessionId, value.mode);
+          setMode(value.mode);
+        } catch (cause) { setMode(before); setError(cause.message); }
+      }
+      return h('label', { className: 'dagy-interject', title: error ?? t('interjectHelp') },
+        h('style', null, '.dagy-interject{display:flex;gap:4px;align-items:center;color:var(--dsw-alias-label-tertiary);font-size:12px}.dagy-interject select{max-width:90px;padding:2px 4px;border-radius:6px;border:1px solid var(--dsw-alias-border-l3);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit}.dagy-interject select:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary)}'),
+        t('interject'), h('select', { 'aria-label': t('interject'), value: mode, onChange: change },
+          ['queue', 'steer', 'cancel'].map(name => h('option', { key: name, value: name }, t(`interject${name[0].toUpperCase()}${name.slice(1)}`)))));
+    }
+
     function SectionIcon({ size }) {
       return h('svg', { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
         h('rect', { x: 3, y: 5, width: 18, height: 14, rx: 3 }), h('path', { d: 'm7 9 3 3-3 3m6 0h4' }));
@@ -351,6 +386,9 @@ window.__ModuleLoader__.load({
         ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
           name: 'conversation.input.left', id: `${NS}-mode`, order: 60, locale: NS,
         }, ComposerMode));
+        ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
+          name: 'conversation.input.left', id: `${NS}-interject`, order: 61, locale: NS,
+        }, InterjectSelect));
         ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
           name: 'conversation.input.dock', id: `${NS}-quota`, order: 30, locale: NS,
         }, QuotaDock));

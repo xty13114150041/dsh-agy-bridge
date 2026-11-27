@@ -48,7 +48,11 @@ export async function apply(ctx, config = {}) {
   }
   for (const agent of ctx.agents.list()) syncTools(agent);
   ctx.on('agent/created', ({ agent }) => { syncTools(agent); });
-  ctx.on('agent/disposed', ({ agent }) => { masks.delete(agent); });
+  ctx.on('agent/disposed', ({ agent }) => { masks.delete(agent); adapter.interjecting.delete(agent.id); });
+  ctx.on('agent/inbox/inserted', ({ agent, message }) => {
+    if (message.source?.kind !== 'user') return;
+    if (!adapter.steer(agent.id, message)) adapter.interrupt(agent.id);
+  });
   ctx.on('session/event', (session, event) => {
     if (event.type !== 'model/selection') return;
     const agent = ctx.agents.get(session.id);
@@ -157,6 +161,15 @@ export async function apply(ctx, config = {}) {
     });
     settingsWrite = change.catch(() => {});
     return change;
+  });
+  mount('interject', async input => {
+    const { sessionId, mode } = input;
+    if (typeof sessionId !== 'string' || !sessionId) throw new Error('请指定当前会话。');
+    if (mode !== undefined) {
+      if (!['queue', 'steer', 'cancel'].includes(mode)) throw new Error('插话方式必须是 queue、steer 或 cancel。');
+      if (mode === 'queue') adapter.interjecting.delete(sessionId); else adapter.interjecting.set(sessionId, mode);
+    }
+    return { mode: adapter.interjecting.get(sessionId) ?? 'queue' };
   });
   mount('mode', async (input, signal) => {
     const controller = ctx.get('sessionController');

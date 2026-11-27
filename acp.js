@@ -162,7 +162,7 @@ export class AcpClient {
 }
 
 // Track updates and keep the session reserved until agy acknowledges cancellation.
-export async function prompt(client, sessionId, blocks, { signal, update, permission } = {}) {
+export async function prompt(client, sessionId, blocks, { signal, update, permission, steers } = {}) {
   signal?.throwIfAborted();
   const lifetime = new AbortController();
   const off = client.subscribe(sessionId, update ?? (() => {}));
@@ -185,8 +185,13 @@ export async function prompt(client, sessionId, blocks, { signal, update, permis
   };
   signal?.addEventListener('abort', cancel, { once: true });
   try {
-    return await client.request('session/prompt', { sessionId, prompt: blocks }, 0);
+    let result = await client.request('session/prompt', { sessionId, prompt: blocks }, 0);
+    // A steered message becomes the turn's new owner: this prompt answers at once and the last steer ends the turn.
+    while (steers?.length) result = (await steers.shift()) ?? result;
+    if (steers) steers.closed = true;
+    return result;
   } finally {
+    if (steers) steers.closed = true;
     clearTimeout(timer);
     lifetime.abort();
     settlePermission(cancelled);
